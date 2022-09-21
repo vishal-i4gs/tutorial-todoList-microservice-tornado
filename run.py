@@ -6,7 +6,7 @@ import subprocess
 from typing import List
 import unittest
 
-SOURCE_CODE = ['addrservice']
+SOURCE_CODE = ['taskservice']
 TEST_CODE = ['tests']
 ALL_CODE = SOURCE_CODE + TEST_CODE
 
