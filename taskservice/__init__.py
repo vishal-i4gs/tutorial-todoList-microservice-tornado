@@ -2,4 +2,4 @@
 
 import os
 
-ADDR_SERVICE_ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+TASK_SERVICE_ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
