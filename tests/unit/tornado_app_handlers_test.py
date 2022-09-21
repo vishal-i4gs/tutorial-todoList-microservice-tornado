@@ -4,18 +4,27 @@ import atexit
 from io import StringIO
 import json
 import yaml
+import aiotask_context as context  # type: ignore
 
 from tornado.ioloop import IOLoop
 import tornado.testing
+import logging
+import logging.config
 
 from taskservice.tornado.app import make_taskservice_app
 
+from taskservice import LOGGER_NAME
 from data import task_data_suite
 
 
 IN_MEMORY_CFG_TXT = '''
 service:
   name: TodoList Test
+
+logging:
+  version: 1
+  root:
+    level: ERROR
 '''
 
 with StringIO(IN_MEMORY_CFG_TXT) as f:
@@ -33,18 +42,24 @@ class TaskServiceTornadoAppTestSetup(tornado.testing.AsyncHTTPTestCase):
         self.task1 = tasks_data[keys[1]]
 
     def get_app(self) -> tornado.web.Application:
-        addr_service, app = make_taskservice_app(
+        logging.config.dictConfig(TEST_CONFIG['logging'])
+        logger = logging.getLogger(LOGGER_NAME)
+
+        task_service, app = make_taskservice_app(
             config=TEST_CONFIG,
-            debug=True
+            debug=True,
+            logger=logger
         )
 
-        addr_service.start()
-        atexit.register(lambda: addr_service.stop())
+        task_service.start()
+        atexit.register(lambda: task_service.stop())
 
         return app
 
     def get_new_ioloop(self):
-        return IOLoop.current()
+        instance = IOLoop.current()
+        instance.asyncio_loop.set_task_factory(context.task_factory)
+        return instance
 
 
 class TaskServiceTornadoAppUnitTests(TaskServiceTornadoAppTestSetup):

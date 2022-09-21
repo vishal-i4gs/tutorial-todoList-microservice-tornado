@@ -15,10 +15,15 @@ $ tree .
 ├── taskservice
 │   ├── __init__.py
 │   ├── service.py
-│   └── tornado
+│   ├── tornado
+│   │   ├── __init__.py
+│   │   ├── app.py
+│   │   └── server.py
+│   └── utils
 │       ├── __init__.py
 │       ├── app.py
 │       └── server.py
+│       └── logutils.py
 ├── configs
 │   └── todoList-local.yaml
 ├── data
@@ -251,3 +256,199 @@ Vary: Accept-Encoding
 ```
 
 ---
+
+## 3. Logging
+
+Checkout the code:
+
+``` bash
+$ git checkout -b <branch> tag-03-logging
+```
+
+Effective logs can cut down diagnosis time and facilitate monitoring and altering.
+
+### Log Format
+
+[Logfmt](https://pypi.org/project/logfmt/) log format consists of *key-value* pairs.
+It offers good balance between processing using standard tools and human readibility.
+
+### Canonical Logs
+
+Emiting one canonical log line](https://brandur.org/canonical-log-lines) for each request makes manual inspection easier.
+Assigning and logging a *request id* to each request, and passing that id to all called service helps correlate logs across services.
+The *key-value* pairs for the log are stored in a [task context](https://github.com/Skyscanner/aiotask-context), which is maintained across asyncio task interleaving.
+
+### Log Configuration
+
+Logging are useful in diagnosing services, more so when async is involved. Python has a standard [logging](https://docs.python.org/3/library/logging.html) package, and its documentation includes an excellent [HOWTO](https://docs.python.org/3/howto/logging.html) guide and [Cookbook](https://docs.python.org/3/howto/logging-cookbook.html). These are rich source of information, and leave nothoing much to add. Following are some of the best practices in my opinion:
+
+- Do NOT use ROOT logger directly throgh `logging.debug()`, `logging.error()` methods directly because it is easy to overlook their default behavior.
+- Do NOT use module level loggers of variety `logging.getLogger(__name__)` because any complex project will require controlling logging through configuration (see next point). These may cause surprise if you forget to set `disable_existing_loggers` to false or overlook how modules are loaded and initialized. If use at all, call `logging.getLogger(__name__)` inside function, rather than outside at the beginning of a module.
+- `dictConfig` (in `yaml`) offers right balance of versatility and flexibility compared to `ini` based `fileConfig`or doing it in code. Specifying logger in config files allows you to use different logging levels and infra in prod deployment, stage deployments, and local debugging (with increasingly more logs).
+
+Sending logs to multiple data stores and tools for processing can be controled by a [log configuration](https://docs.python.org/3/library/logging.config.html). Each logger has a format and multiple handlers can be associated with a logger. Here is a part of `configs/todoList-local.yaml`:
+
+``` yaml
+logging:
+  version: 1
+  formatters:
+    brief:
+      format: '%(asctime)s %(name)s %(levelname)s : %(message)s'
+    detailed:
+      format: 'time="%(asctime)s" logger="%(name)s" level="%(levelname)s" file="%(filename)s" lineno=%(lineno)d function="%(funcName)s" %(message)s'
+  handlers:
+    console:
+      class: logging.StreamHandler
+      level: INFO
+      formatter: brief
+      stream: ext://sys.stdout
+    file:
+      class : logging.handlers.RotatingFileHandler
+      level: DEBUG
+      formatter: detailed
+      filename: /tmp/taskservice-app.log
+      backupCount: 3
+  loggers:
+    taskservice:
+      level: DEBUG
+      handlers:
+        - console
+        - file
+      propagate: no
+    tornado.access:
+      level: DEBUG
+      handlers:
+        - file
+    tornado.application:
+      level: DEBUG
+      handlers:
+        - file
+    tornado.general:
+      level: DEBUG
+      handlers:
+        - file
+  root:
+    level: WARNING
+    handlers:
+      - console
+```
+
+Notice that this configuration not just defines a logger `taskservice` for this service, but also modifies behavior of Tornado's general logger. There are several pre-defined [handlers](https://docs.python.org/3/library/logging.handlers.html). Here the SteamHandler and RotatingFileHandler are being used to write to console and log files respectively.
+
+### Tornado
+
+Tornado has several hooks to control when and how logging is done:
+
+- [`log_function`](https://www.tornadoweb.org/en/stable/web.html#tornado.web.Application.settings): function Tornado calls at the end of every request to log the result.
+- [`write_error`](https://www.tornadoweb.org/en/stable/web.html#tornado.web.RequestHandler.write_error): to customize the error response. Information about the error is added to the log context.
+- [`log_exception`](): to log uncaught exceptions. It can be overwritten to log in logfmt format.
+
+### Log Inspection
+
+**Start the server:**
+
+It will show the console log:
+
+``` bash
+$ python3 taskservice/tornado/server.py --port 8080 --config ./configs/todoList-local.yaml --debug
+
+2022-09-21 15:29:02,243 taskservice INFO : message="STARTING" service_name="TodoList" port=8080
+```
+
+**Watch the logs:**
+
+``` bash
+$ tail -f /tmp/taskservice-app.log
+
+time="2022-09-21 15:29:52,088" logger="taskservice" level="DEBUG" file="logutils.py" lineno=56 function="log" req_id="c297ded2a4454d7cbf3cb21aec114b24" method="GET" uri="/tasks" ip="127.0.0.1" message="REQUEST"
+```
+
+**Send a request:**
+
+```bash
+$ curl -i -X POST http://localhost:8080/tasks -d '{"title": "Task1"}'
+
+HTTP/1.1 201 Created
+Server: TornadoServer/6.0.3
+Content-Type: text/html; charset=UTF-8
+Date: Tue, 17 Mar 2020 07:26:32 GMT
+Location: /tasks/7feec2df29fd4b039028ad351bafe422
+Content-Length: 0
+Vary: Accept-Encoding
+```
+
+The console log will show brief log entries:
+
+``` log
+2020-03-17 12:56:32,784 taskservice INFO : req_id="e6cd3072530f46b9932946fd65a13779" method="POST" uri="/tasks" ip="::1" message="RESPONSE" status=201 time_ms=1.2888908386230469
+```
+
+The log file will show logfmt-style one-line detailed canonical log entries:
+
+``` log
+time="2022-09-21 15:56:05,291" logger="taskservice" level="DEBUG" file="logutils.py" lineno=56 function="log" req_id="f9845edaab90435abcc0312eca43336e" method="GET" uri="/tasks" ip="127.0.0.1" message="REQUEST" service_name="TodoList"
+```
+
+### Unit and Integration Tests
+
+Tests are quiet by default:
+
+``` bash
+$ ./run.py lint
+$ ./run.py typecheck
+
+$ ./run.py test -v
+
+test_todoList_endpoints (integration.tornado_app_taskservice_handlers_test.TestTodoListServiceApp) ... ok
+test_default_handler (unit.tornado_app_handlers_test.TaskServiceTornadoAppUnitTests) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.049s
+
+OK
+
+$ coverage run --source=taskservice --omit="taskservice/tornado/server.py" --branch ./run.py test
+
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.062s
+OK
+
+$ coverage report
+
+Name                              Stmts   Miss Branch BrPart  Cover
+-------------------------------------------------------------------
+taskservice/__init__.py               3      0      0      0   100%
+taskservice/service.py               25      1      0      0    96%
+taskservice/tornado/__init__.py       0      0      0      0   100%
+taskservice/tornado/app.py          105      6     18      6    90%
+taskservice/utils/__init__.py         0      0      0      0   100%
+taskservice/utils/logutils.py        28      0      6      0   100%
+-------------------------------------------------------------------
+TOTAL                               161      7     24      6    93%
+```
+
+If you want to change the log message during tests, change log level from ERROR to INFO:
+
+``` python
+# tests/unit/tornado_app_handlers_test.py
+
+IN_MEMORY_CFG_TXT = '''
+service:
+  name: Todo List Test
+logging:
+  version: 1
+  root:
+    level: INFO
+'''
+```
+
+With that change, if you run the tests, you can examine the logs:
+
+``` log
+$ ./run.py test
+
+INFO:taskservice:req_id="fa90c2cecffe42059ee456e9b0eda30e" method="GET" uri="/tasks/" ip="127.0.0.1" message="RESPONSE" status=200 time_ms=0.8268356323242188
+INFO:taskservice:req_id="8d31f561267f4f1b9c33fb0430841e35" method="POST" uri="/tasks/" ip="127.0.0.1" message="RESPONSE" status=201 time_ms=0.3809928894042969
+WARNING:taskservice:req_id="181fd03c2da34a359183674a82f388b6" method="POST" uri="/tasks/" ip="127.0.0.1" reason="Invalid JSON body" message="RESPONSE" status=400 time_ms=1.6570091247558594 trace=Traceback.....
+```

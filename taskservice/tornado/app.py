@@ -1,18 +1,24 @@
 # Copyright (c) 2020. All rights reserved.
 
 import json
+import logging
+from types import TracebackType
 from typing import (
     Any,
     Awaitable,
     Dict,
     Optional,
     Tuple,
+    Type
 )
 import traceback
+import uuid
 
 import tornado.web
 
+from taskservice import LOGGER_NAME
 from taskservice.service import TodoListService
+import taskservice.utils.logutils as logutils
 
 TODOLIST_REGEX = r'/tasks/?'
 TODOLIST_ENTRY_REGEX = r'/tasks/(?P<id>[a-zA-Z0-9-]+)/?'
@@ -23,18 +29,29 @@ class BaseRequestHandler(tornado.web.RequestHandler):
     def initialize(
         self,
         service: TodoListService,
-        config: Dict
+        config: Dict,
+        logger: logging.Logger
     ) -> None:
         self.service = service
         self.config = config
+        self.logger = logger
 
     def prepare(self) -> Optional[Awaitable[None]]:
-        msg = 'REQUEST: {method} {uri} ({ip})'.format(
+        req_id = uuid.uuid4().hex
+        logutils.set_log_context(
+            req_id=req_id,
             method=self.request.method,
             uri=self.request.uri,
             ip=self.request.remote_ip
         )
-        print(msg)
+
+        logutils.log(
+            self.logger,
+            logging.DEBUG,
+            include_context=True,
+            message='REQUEST',
+            service_name=self.config['service']['name']
+        )
 
         return super().prepare()
 
@@ -50,21 +67,63 @@ class BaseRequestHandler(tornado.web.RequestHandler):
             'message': self._reason
         }
 
-        if self.settings.get("serve_traceback") and "exc_info" in kwargs:
-            # in debug mode, send a traceback
-            trace = '\n'.join(traceback.format_exception(*kwargs['exc_info']))
-            body['trace'] = trace
+        logutils.set_log_context(reason=self._reason)
+
+        if 'exc_info' in kwargs:
+            exc_info = kwargs['exc_info']
+            logutils.set_log_context(exc_info=exc_info)
+            if self.settings.get('serve_traceback'):
+                # in debug mode, send a traceback
+                trace = '\n'.join(traceback.format_exception(*exc_info))
+                body['trace'] = trace
 
         self.finish(body)
 
+    def log_exception(
+        self,
+        typ: Optional[Type[BaseException]],
+        value: Optional[BaseException],
+        tb: Optional[TracebackType],
+    ) -> None:
+        # https://www.tornadoweb.org/en/stable/web.html#tornado.web.RequestHandler.log_exception
+        if isinstance(value, tornado.web.HTTPError):
+            if value.log_message:
+                msg = value.log_message % value.args
+                logutils.log(
+                    tornado.log.gen_log,
+                    logging.WARNING,
+                    status=value.status_code,
+                    request_summary=self._request_summary(),
+                    message=msg
+                )
+        else:
+            logutils.log(
+                tornado.log.app_log,
+                logging.ERROR,
+                message='Uncaught exception',
+                request_summary=self._request_summary(),
+                request=repr(self.request),
+                exc_info=(typ, value, tb),
+                service_name=self.config['service']['name']
+            )
+
 
 class DefaultRequestHandler(BaseRequestHandler):
-    def initialize(self, status_code, message):
+    def initialize(  # type: ignore
+        self,
+        status_code: int,
+        message: str,
+        logger: logging.Logger
+    ):
+        self.logger = logger
         self.set_status(status_code, reason=message)
 
     def prepare(self) -> Optional[Awaitable[None]]:
         raise tornado.web.HTTPError(
-            self._status_code, reason=self._reason
+            self._status_code,
+            'request uri: %s',
+            self.request.uri,
+            reason=self._reason
         )
 
 
@@ -124,33 +183,43 @@ class TodoListEntryRequestHandler(BaseRequestHandler):
 
 
 def log_function(handler: tornado.web.RequestHandler) -> None:
-    status = handler.get_status()
-    request_time = 1000.0 * handler.request.request_time()
+    # https://www.tornadoweb.org/en/stable/web.html#tornado.web.Application.settings
 
-    msg = 'RESPOSE: {status} {method} {uri} ({ip}) {time}ms'.format(
-        status=status,
-        method=handler.request.method,
-        uri=handler.request.uri,
-        ip=handler.request.remote_ip,
-        time=request_time,
+    logger = getattr(handler, 'logger', logging.getLogger(LOGGER_NAME))
+
+    if handler.get_status() < 400:
+        level = logging.INFO
+    elif handler.get_status() < 500:
+        level = logging.WARNING
+    else:
+        level = logging.ERROR
+
+    logutils.log(
+        logger,
+        level,
+        include_context=True,
+        message='RESPONSE',
+        status=handler.get_status(),
+        time_ms=(1000.0 * handler.request.request_time())
     )
 
-    print(msg)
+    logutils.clear_log_context()
 
 
 def make_taskservice_app(
     config: Dict,
-    debug: bool
+    debug: bool,
+    logger: logging.Logger
 ) -> Tuple[TodoListService, tornado.web.Application]:
-    service = TodoListService(config)
+    service = TodoListService(config, logger)
 
     app = tornado.web.Application(
         [
             # TodoList endpoints
             (TODOLIST_REGEX, TodoListRequestHandler,
-                dict(service=service, config=config)),
+                dict(service=service, config=config, logger=logger)),
             (TODOLIST_ENTRY_REGEX, TodoListEntryRequestHandler,
-                dict(service=service, config=config))
+                dict(service=service, config=config, logger=logger))
         ],
         compress_response=True,  # compress textual responses
         log_function=log_function,  # log_request() uses it to log results
@@ -158,7 +227,8 @@ def make_taskservice_app(
         default_handler_class=DefaultRequestHandler,
         default_handler_args={
             'status_code': 404,
-            'message': 'Unknown Endpoint'
+            'message': 'Unknown Endpoint',
+            'logger': logger
         }
     )
 
