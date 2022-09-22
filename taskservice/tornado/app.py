@@ -129,7 +129,9 @@ class DefaultRequestHandler(BaseRequestHandler):
 
 class TodoListRequestHandler(BaseRequestHandler):
     async def get(self):
-        all_tasks = await self.service.get_all_tasks()
+        all_tasks = {}
+        async for id, task in self.service.get_all_tasks():
+            all_tasks[id] = task
         self.set_status(200)
         self.finish(all_tasks)
 

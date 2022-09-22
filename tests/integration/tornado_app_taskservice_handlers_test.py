@@ -35,6 +35,16 @@ class TestTodoListServiceApp(TaskServiceTornadoAppTestSetup):
         self.assertEqual(r.code, 201)
         task_uri = r.headers['Location']
 
+        # Get all addresses in the address book, must be ZERO
+        r = self.fetch(
+            TODOLIST_ENTRY_URI_FORMAT_STR.format(id=''),
+            method='GET',
+            headers=None,
+        )
+        all_tasks = json.loads(r.body.decode('utf-8'))
+        self.assertEqual(r.code, 200, all_tasks)
+        self.assertEqual(len(all_tasks), 1, all_tasks)
+
         # POST: error cases
         r = self.fetch(
             TODOLIST_ENTRY_URI_FORMAT_STR.format(id=''),
@@ -44,6 +54,14 @@ class TestTodoListServiceApp(TaskServiceTornadoAppTestSetup):
         )
         self.assertEqual(r.code, 400)
         self.assertEqual(r.reason, 'Invalid JSON body')
+        r = self.fetch(
+            TODOLIST_ENTRY_URI_FORMAT_STR.format(id=''),
+            method='POST',
+            headers=self.headers,
+            body=json.dumps({}),
+        )
+        self.assertEqual(r.code, 400)
+        self.assertEqual(r.reason, 'JSON Schema validation failed')
 
         # Get the added task
         r = self.fetch(
@@ -61,6 +79,14 @@ class TestTodoListServiceApp(TaskServiceTornadoAppTestSetup):
             headers=None,
         )
         self.assertEqual(r.code, 404)
+        r = self.fetch(
+            task_uri,
+            method='PUT',
+            headers=self.headers,
+            body=json.dumps({}),
+        )
+        self.assertEqual(r.code, 400)
+        self.assertEqual(r.reason, 'JSON Schema validation failed')
 
         # Update that task
         r = self.fetch(

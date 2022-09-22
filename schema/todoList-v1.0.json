@@ -1,0 +1,42 @@
+{
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "Schema of an toDo List",
+    "definitions": {
+      "priority": {
+        "type": "string",
+        "enum": [
+          "urgent",
+          "high",
+          "normal",
+          "low",
+          "none"
+        ]
+      },
+      "taskEntry": {
+        "$id": "#taskEntry",
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
+          "priority": {
+            "$ref": "#/definitions/priority"
+          },
+          "completed": {
+            "type": "boolean"
+          },
+          "due_date": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "$ref": "#/definitions/taskEntry"
+  }

@@ -21,6 +21,9 @@ IN_MEMORY_CFG_TXT = '''
 service:
   name: TodoList Test
 
+task-db:
+  memory: null
+
 logging:
   version: 1
   root:

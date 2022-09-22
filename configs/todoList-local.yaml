@@ -1,6 +1,9 @@
 service:
   name: TodoList
 
+task-db:
+  fs: /tmp/taskservice-db
+
 logging:
   version: 1
   formatters:

@@ -14,6 +14,11 @@ $ tree .
 ├── README.md
 ├── taskservice
 │   ├── __init__.py
+│   ├── database
+│   │   ├── __init__.py
+│   │   ├── todolist_db.py
+│   │   └── db_engines.py
+│   ├── datamodel.py
 │   ├── service.py
 │   ├── tornado
 │   │   ├── __init__.py
@@ -33,13 +38,19 @@ $ tree .
 │       └── task2.json
 ├── requirements.txt
 ├── run.py
+├── schema
+│   └── todoList-v1.0.json
 └── tests
     ├── __init__.py
     ├── integration
     │   ├── __init__.py
+    │   ├── taskservice_test.py
     │   └── tornado_app_taskservice_handlers_test.py
     └── unit
         ├── __init__.py
+        ├── task_data_test.py
+        ├── todoList_db_test.py
+        ├── datamodel_test.py
         └── tornado_app_handlers_test.py
 ```
 
@@ -451,4 +462,137 @@ $ ./run.py test
 INFO:taskservice:req_id="fa90c2cecffe42059ee456e9b0eda30e" method="GET" uri="/tasks/" ip="127.0.0.1" message="RESPONSE" status=200 time_ms=0.8268356323242188
 INFO:taskservice:req_id="8d31f561267f4f1b9c33fb0430841e35" method="POST" uri="/tasks/" ip="127.0.0.1" message="RESPONSE" status=201 time_ms=0.3809928894042969
 WARNING:taskservice:req_id="181fd03c2da34a359183674a82f388b6" method="POST" uri="/tasks/" ip="127.0.0.1" reason="Invalid JSON body" message="RESPONSE" status=400 time_ms=1.6570091247558594 trace=Traceback.....
+```
+
+---
+## 4. Data Model
+
+Get the code:
+
+``` bash
+$ git checkout -b <branch> tag-04-datamodel
+```
+
+### API Data Model
+
+Also known as communication or exchange data model
+The data model for interacting with a microservice. It is designed for efficiently exchanging (sending and receiving) data with the service.
+
+The todoList service uses JSON for exchanging data. The [JSON schema](https://json-schema.org/) for the data model is in `schema/todoList-v1.0.json`, and test data in `data/tasks/*.json`. Even the data must be tested to be correct. So there is a test `tests/unit/task_data_test.py` to check whether data files conform to the JSON schema.
+
+``` bash
+$ python3 tests/unit/task_data_test.py
+..
+----------------------------------------------------------------------
+Ran 2 tests in 0.006s
+OK
+```
+
+### Object Data Model
+
+Also known as application data model or data structures.
+It is designed for efficiently performing business logic (algorithms) of an application / service.
+
+There are tools like [Python JSON Schema Objects](https://github.com/cwacek/python-jsonschema-objects), [Warlock](https://github.com/bcwaldon/warlock), [Valideer](https://github.com/podio/valideer), that generate POPO (Plain Old Python Object) classes from a JSON schema. These tools do simple structural mapping from JSON schema elements to classes. However, there are validation checks, inheritance, and polymorphism that can't be expressed in JSON schema. So it may require hand-crafting a data model suitable for business logic.
+
+The logical data model is implemented in `taskservice/datamodel.py`.
+
+### Storage Data Model
+
+Also known as Physical Data Model.
+It is designed for efficient storage, retrieval, and search. There are several kinds of data stores: relational, hierarchical, graph. A combination of these storage is picked depending upon the structure of the persistent data, and retrieval and search requirements.
+
+The `taskservice/database/todoList_db.py` defines an `AbstractTodoListDB`, which the service interacts with. This decouples the storage choice, and allows changing the storage model without affecting rest of the code. For example, it defines an `InMemoryTodoListDB` and `FileTodoListDB`. The in-memory data store is useful in unit/integration tests as it facilitates deep asserts for the state of the store. The file backed storage persists the data in files, and useful for debugging.
+
+The storage can be swapped by setting the configuration, for example:
+
+``` yaml
+task-db:
+  memory: null
+```
+
+Based on the config, an appropriate DB engine is set up by `taskservice/database/db_engines.py:create_todolist_db()`.
+
+Following is need to implement a SQL data store:
+
+- Implement a sub-class of `AbstractTodoListDB` that stores data in a RDBMS
+- Add a case in `create_todolist_db()`
+- Change config (`configs/todoList-local.yaml`)
+
+It does not require touch any of the business logic.
+
+### Running the Service
+
+Start the service:
+
+``` bash
+$ python3 taskservice/tornado/server.py --port 8080 --config ./configs/todoList-local.yaml --debug
+2020-03-30 06:46:29,641 taskservice INFO : message="STARTING" service_name="TodoList" port=8080
+```
+
+Test CRUD with curl command:
+
+``` bash
+$ curl -X 'GET' http://localhost:8080/tasks
+{}
+$ curl -i -X 'POST' -H "Content-Type: application/json" -d "@data/tasks/task1.json" http://localhost:8080/tasks
+HTTP/1.1 201 Created
+Server: TornadoServer/6.0.3
+Content-Type: text/html; charset=UTF-8
+Date: Thu, 22 Sep 2022 06:24:03 GMT
+Location: /tasks/4bb6e1e4d7e54421ba710d6d82f1a748
+Content-Length: 0
+Vary: Accept-Encoding
+$ curl -X 'GET' http://localhost:8080/tasks/4bb6e1e4d7e54421ba710d6d82f1a748
+{"title": "Complete Chapter-1", "description": ...}
+$ curl -i -X 'PUT' -H "Content-Type: application/json" -d "@data/tasks/task2.json" http://localhost:8080/tasks/4bb6e1e4d7e54421ba710d6d82f1a748
+HTTP/1.1 204 No Content
+Server: TornadoServer/6.0.3
+Date: Thu, 22 Sep 2022 06:25:01 GMT
+Vary: Accept-Encoding
+$ curl -X 'GET' http://localhost:8080/tasks/4bb6e1e4d7e54421ba710d6d82f1a748
+{"title": "Complete Chapter-2", "description": ...}
+$ curl -i -X 'DELETE' http://localhost:8080/tasks/4bb6e1e4d7e54421ba710d6d82f1a748
+HTTP/1.1 204 No Content
+Server: TornadoServer/6.0.3
+Date: Thu, 22 Sep 2022 06:25:34 GMT
+Vary: Accept-Encoding
+$ curl -X 'GET' http://localhost:8080/tasks
+{}
+```
+
+Change `task-db` in `configs/todoList-local.yaml` from memory to file system:
+
+``` yaml
+task-db:
+  fs: /tmp/taskservice-db
+```
+
+Run all the commands again. You will see records being stored in `/tmp/taskservice-db` as json files.
+
+### Tests and Code Coverage
+
+Run tests and check code coverage:
+
+``` bash
+$ coverage run --source=taskservice --omit="taskservice/tornado/server.py" --branch ./run.py test
+..........
+----------------------------------------------------------------------
+Ran 13 tests in 0.126s
+OK
+$ coverage report
+Name                                     Stmts   Miss Branch BrPart  Cover
+--------------------------------------------------------------------------
+taskservice/__init__.py                      7      0      0      0   100%
+taskservice/database/__init__.py             0      0      0      0   100%
+taskservice/database/todoList_db.py        107      5     28      1    96%
+taskservice/database/db_engines.py           6      0      2      0   100%
+taskservice/datamodel.py                    59      0     10      0   100%
+taskservice/service.py                      36      0      2      0   100%
+taskservice/tornado/__init__.py              0      0      0      0   100%
+taskservice/tornado/app.py                 107      2     20      5    94%
+taskservice/utils/__init__.py                0      0      0      0   100%
+taskservice/utils/logutils.py               28      0      6      0   100%
+--------------------------------------------------------------------------
+TOTAL                                      350      7     68      6    97%
 ```
