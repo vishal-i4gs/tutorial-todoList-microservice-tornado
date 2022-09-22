@@ -2,7 +2,7 @@
 
 import jsonschema  # type: ignore
 import logging
-
+import asyncio
 from typing import AsyncIterator, Mapping, Tuple
 
 from taskservice import TODOLIST_SCHEMA
@@ -20,10 +20,12 @@ class TodoListService:
         self.logger = logger
 
     def start(self):
-        self.task_db.start()
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self.task_db.start())
 
     def stop(self):
-        self.task_db.stop()
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self.task_db.stop())
 
     def validate_task(self, task: Mapping) -> None:
         try:
@@ -52,3 +54,7 @@ class TodoListService:
     async def get_all_tasks(self) -> AsyncIterator[Tuple[str, Mapping]]:
         async for id, task in self.task_db.read_all_tasks():
             yield id, task.to_api_dm()
+
+    def clear_all_tasks(self):
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self.task_db.clear_all_tasks())

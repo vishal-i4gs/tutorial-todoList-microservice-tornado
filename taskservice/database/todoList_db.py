@@ -6,15 +6,19 @@ import json
 import os
 from typing import AsyncIterator, Dict, Mapping, Tuple
 import uuid
+import sqlite3
+import aiosqlite
 
-from taskservice.datamodel import TaskEntry
+from taskservice.datamodel import TaskEntry, TaskPriority
 
 
 class AbstractTodoListDB(metaclass=ABCMeta):
-    def start(self):
+    @abstractmethod
+    async def start(self):
         pass
 
-    def stop(self):
+    @abstractmethod
+    async def stop(self):
         pass
 
     # CRUD
@@ -40,13 +44,23 @@ class AbstractTodoListDB(metaclass=ABCMeta):
         raise NotImplementedError()
 
     @abstractmethod
-    def read_all_tasks(self) -> AsyncIterator[Tuple[str, TaskEntry]]:
+    async def read_all_tasks(self) -> AsyncIterator[Tuple[str, TaskEntry]]:
+        raise NotImplementedError()
+
+    @abstractmethod
+    async def clear_all_tasks(self) -> None:
         raise NotImplementedError()
 
 
 class InMemoryTodoListDB(AbstractTodoListDB):
     def __init__(self):
         self.db: Dict[str, TaskEntry] = {}
+
+    async def start(self):
+        await super().start()
+
+    async def stop(self):
+        await super().stop()
 
     async def create_task(
         self,
@@ -83,6 +97,9 @@ class InMemoryTodoListDB(AbstractTodoListDB):
         for id, task in self.db.items():
             yield id, task
 
+    async def clear_all_tasks(self) -> None:
+        self.db: Dict[str, TaskEntry] = {}
+
 
 class FilesystemTodoListDB(AbstractTodoListDB):
     def __init__(self, store_dir_path: str):
@@ -96,6 +113,12 @@ class FilesystemTodoListDB(AbstractTodoListDB):
                 )
             )
         self._store = store_dir
+
+    async def start(self):
+        await super().start()
+
+    async def stop(self):
+        await super().stop()
 
     @property
     def store(self) -> str:
@@ -178,3 +201,158 @@ class FilesystemTodoListDB(AbstractTodoListDB):
     ) -> AsyncIterator[Tuple[str, TaskEntry]]:
         async for id, task in self._file_read_all():
             yield id, TaskEntry.from_api_dm(task)
+
+    async def clear_all_tasks(self) -> None:
+        all_files = os.listdir(self.store)
+        extn_end = '.json'
+        extn_len = len(extn_end)
+        for f in all_files:
+            if f.endswith(extn_end):
+                id = f[:-extn_len]
+                os.remove(self._file_name(id))
+
+
+class SQLTodoListDB(AbstractTodoListDB):
+    def __init__(self, sql_db_path: str) -> None:
+        self.sql_db_path = sql_db_path
+
+    async def start(self):
+        self.conn = await aiosqlite.connect(self.sql_db_path)
+        task_entry_table = await self.conn.execute(
+            """
+                SELECT name FROM sqlite_master
+                WHERE type=\'table\' AND name=(?);
+            """, ("task_entries",))
+
+        if await task_entry_table.fetchall() == []:
+            await self.conn.execute(
+                """
+                    CREATE TABLE task_entries(
+                        id VARCHAR(255),
+                        title VARCHAR(255),
+                        description VARCHAR(255),
+                        priority VARCHAR(10),
+                        dueDate INTEGER,
+                        completed BOOLEAN
+                    );
+                """
+            )
+            await self.conn.commit()
+
+    async def stop(self):
+        await self.conn.close()
+
+    async def _row_exists(self, key: str) -> bool:
+        rows = await self.conn.execute(
+            """
+                SELECT * FROM task_entries WHERE id = (?)
+            """, (key,)
+        )
+
+        if await rows.fetchall() == []:
+            return False
+        else:
+            return True
+
+    async def create_task(self, task: TaskEntry, id: str = None) -> str:
+        if id is None:
+            id = uuid.uuid4().hex
+
+        if await self._row_exists(id):
+            raise KeyError('{} already exists'.format(id))
+
+        await self.conn.execute(
+            """
+                INSERT INTO task_entries (
+                    id,
+                    title,
+                    description,
+                    priority,
+                    dueDate,
+                    completed
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                id,
+                task.title,
+                task.description,
+                task.priority.name,
+                task.due_date,
+                task.completed
+            )
+        )
+        await self.conn.commit()
+        return id
+
+    async def delete_task(self, id: str) -> None:
+        if await self._row_exists(id):
+            await self.conn.execute(
+                """
+                    DELETE FROM task_entries WHERE id = (?)
+                """, (id, )
+            )
+            await self.conn.commit()
+        else:
+            raise KeyError(id)
+
+    async def update_task(self, id: str, task: TaskEntry) -> None:
+        if await self._row_exists(id):
+            await self.conn.execute(
+                """
+                    UPDATE task_entries SET
+                        title=(?),
+                        description=(?),
+                        priority=(?),
+                        dueDate=(?),
+                        completed=(?)
+                    WHERE
+                        id=(?)
+                """, (
+                    task.title,
+                    task.description,
+                    task.priority.name,
+                    task.due_date,
+                    task.completed,
+                    id
+                )
+            )
+            await self.conn.commit()
+        else:
+            raise KeyError(id)
+
+    async def read_task(self, id: str) -> TaskEntry:
+        if await self._row_exists(id):
+            async with aiosqlite.connect(self.sql_db_path) as db:
+                db.row_factory = aiosqlite.Row
+                async with db.execute("SELECT * FROM task_entries WHERE id=(?)", (id, )) as cursor: # noqa
+                    async for row in cursor:
+                        return TaskEntry(
+                            title=row['title'],
+                            description=row['description'],
+                            priority=TaskPriority[row['priority']],
+                            due_date=row['dueDate'],
+                            completed=row['completed']
+                        )
+        else:
+            raise KeyError(id)
+
+    async def read_all_tasks(self) -> AsyncIterator[Tuple[str, Dict]]:
+        async with aiosqlite.connect(self.sql_db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM task_entries") as cursor:
+                async for row in cursor:
+                    yield row['id'], TaskEntry(
+                        title=row['title'],
+                        description=row['description'],
+                        priority=TaskPriority[row['priority']],
+                        due_date=row['dueDate'],
+                        completed=row['completed']
+                    )
+
+    async def clear_all_tasks(self) -> None:
+        await self.conn.execute(
+                """
+                DELETE FROM task_entries
+                """
+        )
+        await self.conn.commit()

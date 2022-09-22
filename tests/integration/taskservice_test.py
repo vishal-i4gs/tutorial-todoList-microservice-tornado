@@ -6,6 +6,7 @@ import logging
 import logging.config
 import unittest
 import yaml
+import asyncio
 
 from taskservice import LOGGER_NAME
 from taskservice.datamodel import TaskEntry
@@ -17,7 +18,7 @@ service:
   name: TodoList Test
 
 task-db:
-  memory: null
+  sql: "./taskservice/database/tasks.db"
 
 logging:
   version: 1
@@ -30,7 +31,7 @@ with StringIO(IN_MEMORY_CFG_TXT) as f:
 
 
 class TodoListServiceWithInMemoryDBTest(asynctest.TestCase):
-    async def setUp(self) -> None:
+    def setUp(self) -> None:
         logging.config.dictConfig(TEST_CONFIG['logging'])
         logger = logging.getLogger(LOGGER_NAME)
 
@@ -39,13 +40,15 @@ class TodoListServiceWithInMemoryDBTest(asynctest.TestCase):
             logger=logger
         )
         self.service.start()
+        self.service.clear_all_tasks()
 
         self.tasks_data = task_data_suite()
         for id, val in self.tasks_data.items():
             task = TaskEntry.from_api_dm(val)
-            await self.service.task_db.create_task(task, id)
+            asyncio.get_event_loop().run_until_complete(self.service.task_db.create_task(task, id))  # noqa
 
-    async def tearDown(self) -> None:
+    def tearDown(self) -> None:
+        self.service.clear_all_tasks()
         self.service.stop()
 
     @asynctest.fail_on(active_handles=True)

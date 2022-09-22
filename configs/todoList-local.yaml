@@ -2,7 +2,9 @@ service:
   name: TodoList
 
 task-db:
-  fs: /tmp/taskservice-db
+  # memory: null
+  # fs: /tmp/taskservice-db
+  sql: "./taskservice/database/tasks.db"
 
 logging:
   version: 1

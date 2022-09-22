@@ -3,7 +3,7 @@
 from typing import Dict
 
 from taskservice.database.todoList_db import (
-    AbstractTodoListDB, InMemoryTodoListDB, FilesystemTodoListDB
+    AbstractTodoListDB, InMemoryTodoListDB, FilesystemTodoListDB, SQLTodoListDB
 )
 
 
@@ -14,4 +14,5 @@ def create_todolist_db(task_db_config: Dict) -> AbstractTodoListDB:
     return {
         'memory': lambda cfg: InMemoryTodoListDB(),
         'fs': lambda cfg: FilesystemTodoListDB(cfg),
+        'sql': lambda cfg: SQLTodoListDB(cfg)
     }[db_type](db_config)
