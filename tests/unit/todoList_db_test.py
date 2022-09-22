@@ -8,9 +8,10 @@ import tempfile
 from typing import Dict
 import unittest
 import yaml
+import asyncio
 
 from taskservice.database.todoList_db import (
-    AbstractTodoListDB, InMemoryTodoListDB, FilesystemTodoListDB
+    AbstractTodoListDB, InMemoryTodoListDB, FilesystemTodoListDB, SQLTodoListDB
 )
 from taskservice.database.db_engines import create_todolist_db
 from taskservice.datamodel import TaskEntry
@@ -45,6 +46,16 @@ task-db:
         self.assertEqual(type(db), FilesystemTodoListDB)
         self.assertEqual(db.store, '/tmp')
 
+    def test_sqlite_db_config(self):
+        cfg = self.read_config('''
+task-db:
+  sql: /tmp/tasks.db
+        ''')
+
+        self.assertIn('sql', cfg['task-db'])
+        db = create_todolist_db(cfg['task-db'])
+        self.assertEqual(type(db), SQLTodoListDB)
+
 
 class AbstractTodoListDBTestCase(metaclass=ABCMeta):
     def setUp(self) -> None:
@@ -59,7 +70,7 @@ class AbstractTodoListDBTestCase(metaclass=ABCMeta):
         raise NotImplementedError()
 
     @abstractmethod
-    def task_count(self) -> int:
+    async def task_count(self) -> int:
         raise NotImplementedError()
 
     @asynctest.fail_on(active_handles=True)
@@ -76,7 +87,7 @@ class AbstractTodoListDBTestCase(metaclass=ABCMeta):
             with self.assertRaises(KeyError):  # type: ignore
                 await self.task_db.create_task(task, id)
 
-        self.assertEqual(self.task_count(), 2)  # type: ignore
+        self.assertEqual(await self.task_count(), 2)  # type: ignore
 
         # First data in test set
         first_id = list(self.task_data.keys())[0]
@@ -90,7 +101,7 @@ class AbstractTodoListDBTestCase(metaclass=ABCMeta):
         # Create without giving id
         new_id = await self.task_db.create_task(task)
         self.assertIsNotNone(new_id)  # type: ignore
-        self.assertEqual(self.task_count(), 3)  # type: ignore
+        self.assertEqual(await self.task_count(), 3)  # type: ignore
 
         # Get All Tasks
         tasks = {}
@@ -107,10 +118,10 @@ class AbstractTodoListDBTestCase(metaclass=ABCMeta):
             with self.assertRaises(KeyError):  # type: ignore
                 await self.task_db.delete_task(id)
 
-        self.assertEqual(self.task_count(), 1)  # type: ignore
+        self.assertEqual(await self.task_count(), 1)  # type: ignore
 
         await self.task_db.delete_task(new_id)
-        self.assertEqual(self.task_count(), 0)  # type: ignore
+        self.assertEqual(await self.task_count(), 0)  # type: ignore
 
 
 class InMemoryTodoListDBTest(
@@ -121,7 +132,7 @@ class InMemoryTodoListDBTest(
         self.mem_db = InMemoryTodoListDB()
         return self.mem_db
 
-    def task_count(self) -> int:
+    async def task_count(self) -> int:
         return len(self.mem_db.db)
 
 
@@ -135,7 +146,7 @@ class FilesystemTodoListDBTest(
         self.fs_db = FilesystemTodoListDB(self.store_dir)
         return self.fs_db
 
-    def task_count(self) -> int:
+    async def task_count(self) -> int:
         return len([
             name for name in os.listdir(self.store_dir)
             if os.path.isfile(os.path.join(self.store_dir, name))
@@ -154,6 +165,32 @@ class FilesystemTodoListDBTest(
                 f.write('this is a file and not a dir')
             with self.assertRaises(ValueError):
                 FilesystemTodoListDB(tmpfilename)
+
+
+class DBTodoListDBTest(
+    AbstractTodoListDBTestCase,
+    asynctest.TestCase
+):
+    def make_task_db(self) -> AbstractTodoListDB:
+        self.sql_db = SQLTodoListDB("/tmp/tasks.db")
+        asyncio.get_event_loop().run_until_complete(self.sql_db.start())
+        asyncio.get_event_loop().run_until_complete(self.sql_db.clear_all_tasks())  # noqa
+        return self.sql_db
+
+    async def task_count(self) -> int:
+        tasks = self.sql_db.read_all_tasks()
+        ctr = 0
+        async for id, task in tasks:
+            ctr = ctr + 1
+        return ctr
+
+    def tearDown(self):
+        asyncio.get_event_loop().run_until_complete(self.sql_db.clear_all_tasks())  # noqa
+        asyncio.get_event_loop().run_until_complete(self.sql_db.stop())
+        super().tearDown()
+
+    def test_db_creation(self):
+        assert os.path.isfile("/tmp/tasks.db")
 
 
 if __name__ == '__main__':

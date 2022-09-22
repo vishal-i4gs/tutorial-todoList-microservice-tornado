@@ -85,7 +85,6 @@ def run_server(
         # signal.SIGINT
         pass
     finally:
-        loop.stop()
         logutils.log(
             logger,
             logging.INFO,
@@ -97,6 +96,7 @@ def run_server(
         # loop.run_until_complete(asyncio.gather(*asyncio.Task.all_tasks()))
         loop.run_until_complete(loop.shutdown_asyncgens())
         service.stop()
+        loop.stop()
         loop.close()
         logutils.log(
             logger,
